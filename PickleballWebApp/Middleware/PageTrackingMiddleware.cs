@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using PickleballWebApp.Extensions;
 using PickleballWebApp.Services;
 
 namespace PickleballWebApp.Middleware
@@ -44,7 +46,7 @@ namespace PickleballWebApp.Middleware
             _next = next;
         }
 
-        public async Task InvokeAsync(HttpContext context, UserDataService userDataService)
+        public async Task InvokeAsync(HttpContext context)
         {
             await _next(context);
 
@@ -64,15 +66,19 @@ namespace PickleballWebApp.Middleware
             if (path.Contains('.')) return; // static file by extension
 
             var title = ResolveTile(path);
-            var username = context.User.Identity!.Name ?? "unknown";
+
+            var userId = context.User.GetSupabaseUserId();
+            if (userId == Guid.Empty) return;  // chưa có Supabase ID
 
             try
             {
-                userDataService.RecordPageVisit(username, path, title);
+                var supabaseService = context.RequestServices
+                    .GetRequiredService<SupabaseUserDataService>();
+                await supabaseService.RecordPageVisitAsync(userId, path, title);
             }
             catch
             {
-                // Never crash the request due to tracking failure
+                // Never crash request due to tracking failure
             }
         }
 

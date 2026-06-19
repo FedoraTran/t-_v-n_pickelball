@@ -1,7 +1,7 @@
-using System.Collections.Generic;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using PickleballWebApp.Extensions;
 using PickleballWebApp.Models;
 using PickleballWebApp.Services;
 
@@ -10,9 +10,9 @@ namespace PickleballWebApp.Pages
     [Authorize]
     public class MyProgressModel : PageModel
     {
-        private readonly UserDataService _userData;
+        private readonly SupabaseUserDataService _userData;
 
-        public MyProgressModel(UserDataService userData)
+        public MyProgressModel(SupabaseUserDataService userData)
         {
             _userData = userData;
         }
@@ -21,12 +21,12 @@ namespace PickleballWebApp.Pages
         public List<SessionResult> RecentSessions { get; private set; } = new();
         public List<PageVisit> RecentVisits { get; private set; } = new();
 
-        public void OnGet()
+        public async Task OnGetAsync()
         {
-            var username = User.Identity!.Name!;
-            Stats = _userData.GetStats(username);
-            RecentSessions = _userData.GetSessions(username, 20);
-            RecentVisits = _userData.GetRecentVisits(username, 15);
+            var userId = User.GetSupabaseUserId();
+            Stats          = await _userData.GetStatsAsync(userId);
+            RecentSessions = await _userData.GetSessionsAsync(userId, 20);
+            RecentVisits   = await _userData.GetRecentVisitsAsync(userId, 15);
         }
     }
 }

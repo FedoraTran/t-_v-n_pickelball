@@ -1,10 +1,8 @@
 """Sinh feedback tiếng Việt cho người dùng.
 
-Dựa vào:
-- `per_joint` score (0-100, NaN nếu n/a) -> tìm joint sai nhất.
-- `joint_offset` (user - ref) đã NORMALIZED theo torso length (đơn vị: torso).
-  Sign: y dương = user ở dưới ref (cần nâng), x dương = user lệch sang phải khung
-  hình so với ref (cần dịch sang trái).
+Ưu tiên:
+1. Angle-based: so sánh góc khớp user vs reference (cụ thể hơn, dễ sửa hơn).
+2. Position-based: joint có score thấp nhất kèm hướng cần dịch.
 """
 
 from __future__ import annotations
@@ -20,59 +18,78 @@ if str(_HERE) not in sys.path:
 
 from pose_utils import KP_NAMES_VI
 
-
-# Ngưỡng đánh giá: dưới 70 -> cần sửa
-_NEEDS_FIX_TH = 70.0
-# Ngưỡng offset (đơn vị torso) để xét là "đáng kể"
-_MIN_OFFSET_NORM = 0.08  # ~8% torso length
+_NEEDS_FIX_TH  = 70.0
+_MIN_OFFSET_N  = 0.08   # 8% torso (đơn vị normalized)
+_ANGLE_TH_WARN = 15.0   # delta ° để báo cần sửa
+_ANGLE_TH_BAD  = 25.0   # delta ° nghiêm trọng
 
 
 def _direction_phrase(dx_n: float, dy_n: float) -> str:
-    """Mô tả hướng cần sửa, dx_n và dy_n đã ở đơn vị torso (sau normalize)."""
     parts: list[str] = []
-    # y: user thấp hơn ref (dy > 0) -> cần nâng lên
-    if abs(dy_n) >= _MIN_OFFSET_NORM:
+    if abs(dy_n) >= _MIN_OFFSET_N:
         parts.append("nâng cao hơn" if dy_n > 0 else "hạ thấp hơn")
-    # x: user lệch sang phải so với ref (dx > 0) -> cần dịch sang trái
-    if abs(dx_n) >= _MIN_OFFSET_NORM:
+    if abs(dx_n) >= _MIN_OFFSET_N:
         parts.append("dịch sang trái" if dx_n > 0 else "dịch sang phải")
+    return ", ".join(parts) if parts else "điều chỉnh nhẹ"
 
-    if not parts:
-        return "điều chỉnh nhẹ"
-    return ", ".join(parts)
+
+def _angle_feedback(
+    user_angles: dict[str, float],
+    ref_angles:  dict[str, float],
+    max_msgs: int,
+) -> list[str]:
+    """Tạo feedback dựa trên delta góc giữa user và ref."""
+    candidates: list[tuple[float, str]] = []
+    for label in user_angles:
+        ua = user_angles[label]
+        ra = ref_angles.get(label, float("nan"))
+        if np.isnan(ua) or np.isnan(ra):
+            continue
+        delta = ua - ra          # dương = user mở góc hơn ref (cần gập lại)
+        if abs(delta) < _ANGLE_TH_WARN:
+            continue
+        action = "gập lại hơn" if delta > 0 else "duỗi ra hơn"
+        severity = "!" if abs(delta) >= _ANGLE_TH_BAD else ""
+        msg = f"{label}{severity}: {action} ({ua:.0f}° → {ra:.0f}°)"
+        candidates.append((abs(delta), msg))
+
+    candidates.sort(reverse=True)
+    return [m for _, m in candidates[:max_msgs]]
 
 
 def generate_feedback(
     per_joint: np.ndarray,
     joint_offset: np.ndarray,
-    torso_px: float = 0.0,   # giữ tham số cho tương thích; không dùng vì offset đã normalized
-    top_k: int = 2,
+    torso_px: float = 0.0,       # không dùng, giữ để tương thích
+    top_k: int = 3,
+    user_angles: dict[str, float] | None = None,
+    ref_angles:  dict[str, float] | None = None,
 ) -> list[str]:
     """Trả về danh sách feedback tiếng Việt (tối đa top_k câu)."""
-    del torso_px  # noqa: F841 - giữ tương thích chữ ký cũ
+    del torso_px
     msgs: list[str] = []
-    if per_joint is None or len(per_joint) == 0:
-        return msgs
 
-    valid_idx = [i for i in range(len(per_joint)) if not np.isnan(per_joint[i])]
-    bad = [(i, float(per_joint[i])) for i in valid_idx if per_joint[i] < _NEEDS_FIX_TH]
-    if not bad:
-        return ["Tư thế khớp tốt, giữ nguyên nhịp."]
+    # 1. Angle-based (ưu tiên cao nhất – tối đa 2 câu)
+    if user_angles and ref_angles:
+        msgs.extend(_angle_feedback(user_angles, ref_angles, max_msgs=2))
 
-    bad.sort(key=lambda t: t[1])  # thấp nhất trước
-
-    for i, score in bad[:top_k]:
-        name = KP_NAMES_VI[i] if i < len(KP_NAMES_VI) else f"joint {i}"
-        direction = _direction_phrase(
-            float(joint_offset[i, 0]), float(joint_offset[i, 1])
+    # 2. Position-based để lấp các slot còn lại
+    remaining = top_k - len(msgs)
+    if remaining > 0 and per_joint is not None and len(per_joint) > 0:
+        valid_idx = [i for i in range(len(per_joint)) if not np.isnan(per_joint[i])]
+        bad = sorted(
+            [(i, float(per_joint[i])) for i in valid_idx if per_joint[i] < _NEEDS_FIX_TH],
+            key=lambda t: t[1],
         )
-        msgs.append(f"{name.capitalize()}: {direction} ({score:.0f}%).")
+        for i, score in bad[:remaining]:
+            name = KP_NAMES_VI[i] if i < len(KP_NAMES_VI) else f"joint {i}"
+            direction = _direction_phrase(float(joint_offset[i, 0]), float(joint_offset[i, 1]))
+            msgs.append(f"{name.capitalize()}: {direction} ({score:.0f}%)")
 
-    return msgs
+    return msgs if msgs else ["Tư thế tốt, giữ nguyên nhịp."]
 
 
 def estimate_torso_px(kpts: np.ndarray, conf: np.ndarray, conf_th: float = 0.25) -> float:
-    """Ước lượng torso length theo pixel (dùng cho hiển thị nếu cần)."""
     from pose_utils import KP_LEFT_HIP, KP_LEFT_SHOULDER, KP_RIGHT_HIP, KP_RIGHT_SHOULDER
 
     def ok(i):
@@ -85,4 +102,3 @@ def estimate_torso_px(kpts: np.ndarray, conf: np.ndarray, conf_th: float = 0.25)
     if ok(KP_LEFT_SHOULDER) and ok(KP_RIGHT_SHOULDER):
         return float(np.linalg.norm(kpts[KP_LEFT_SHOULDER] - kpts[KP_RIGHT_SHOULDER]))
     return 0.0
-

@@ -1,14 +1,21 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using System.Threading.Tasks;
 
 namespace PickleballWebApp.Pages
 {
     public class LogoutModel : PageModel
     {
-        public async Task<IActionResult> OnPostAsync()
+        private readonly Supabase.Client _supabase;
+
+        public LogoutModel(Supabase.Client supabase)
         {
+            _supabase = supabase;
+        }
+
+        public async Task<IActionResult> OnGetAsync()
+        {
+            await _supabase.Auth.SignOut();
             await HttpContext.SignOutAsync("CookieAuth");
             return RedirectToPage("/Index");
         }

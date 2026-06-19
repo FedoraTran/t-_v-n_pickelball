@@ -38,7 +38,8 @@ if str(_HERE) not in sys.path:
 from comparator import compare_frame
 from feedback import estimate_torso_px, generate_feedback
 from pose_utils import (
-    CONF_TH, JOINT_GROUPS, draw_skeleton, pick_best_person, score_to_color,
+    CONF_TH, JOINT_GROUPS, PoseSmoother,
+    draw_angles_overlay, draw_skeleton, pick_best_person, score_to_color,
 )
 from recorder import SessionRecorder
 from reference import PRESETS_DIR, ReferenceMotion, build_from_video
@@ -101,6 +102,7 @@ class CompareWorker(threading.Thread):
         ref_fps = self.ref.fps if self.ref.fps > 0 else 30.0
         num_ref = self.ref.num_frames
 
+        smoother = PoseSmoother(alpha=0.35)
         prev_user: np.ndarray | None = None
         prev_ref: np.ndarray | None = None
         t0 = time.time()
@@ -170,6 +172,9 @@ class CompareWorker(threading.Thread):
                     user_kpts = kxy[idx].astype(np.float32)
                     user_conf = kcf[idx].astype(np.float32)
 
+            # Temporal smoothing để giảm jitter
+            user_kpts = smoother.update(user_kpts, user_conf)
+
             ref_kpts = self.ref.kpts[target_ref_idx]
             ref_conf = self.ref.conf[target_ref_idx]
 
@@ -182,12 +187,15 @@ class CompareWorker(threading.Thread):
             )
 
             torso = estimate_torso_px(user_kpts, user_conf)
-            fb_msgs = generate_feedback(cmp.per_joint, cmp.joint_offset, torso)
+            fb_msgs = generate_feedback(
+                cmp.per_joint, cmp.joint_offset, torso,
+                user_angles=cmp.user_angles, ref_angles=cmp.ref_angles,
+            )
 
             # Render: webcam + skeleton màu theo joint score
             disp = frame.copy()
             draw_skeleton(disp, user_kpts, user_conf, joint_scores=cmp.per_joint)
-            # Overlay nhỏ trên webcam: overall + fps
+            draw_angles_overlay(disp, user_kpts, user_conf, cmp.user_angles, cmp.ref_angles)
             _overlay_hud(disp, cmp.overall, frame_idx, target_ref_idx, num_ref)
 
             # Render: reference frame + skeleton trắng
@@ -218,6 +226,8 @@ class CompareWorker(threading.Thread):
                 "per_joint": cmp.per_joint.copy(),
                 "valid": cmp.valid,
                 "feedback": list(fb_msgs),
+                "user_angles": dict(cmp.user_angles),
+                "ref_angles": dict(cmp.ref_angles),
             })
 
             if self.recorder is not None:

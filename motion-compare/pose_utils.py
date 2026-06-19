@@ -85,8 +85,18 @@ def score_to_color(score: float) -> tuple[int, int, int]:
     if score >= 80.0:
         return (60, 220, 60)
     if score >= 50.0:
-        return (40, 220, 220)
+        return (40, 200, 220)
     return (60, 60, 230)
+
+
+def _avg_color(
+    ca: tuple[int, int, int], cb: tuple[int, int, int]
+) -> tuple[int, int, int]:
+    return (
+        (ca[0] + cb[0]) // 2,
+        (ca[1] + cb[1]) // 2,
+        (ca[2] + cb[2]) // 2,
+    )
 
 
 def draw_skeleton(
@@ -95,14 +105,10 @@ def draw_skeleton(
     kpts_conf: Optional[np.ndarray] = None,
     base_color: tuple[int, int, int] = (255, 255, 255),
     joint_scores: Optional[np.ndarray] = None,
-    kpt_radius: int = 4,
+    kpt_radius: int = 5,
     conf_th: float = CONF_TH,
 ) -> None:
-    """Vẽ skeleton lên ảnh.
-
-    Nếu có `joint_scores` (shape (17,)) thì mỗi joint được tô màu theo score.
-    Ngược lại dùng `base_color`.
-    """
+    """Vẽ skeleton lên ảnh với màu per-joint và cạnh gradient."""
     if kpts_xy is None or len(kpts_xy) == 0:
         return
 
@@ -112,25 +118,126 @@ def draw_skeleton(
         return float(kpts_conf[i]) >= conf_th
 
     def color_for(i: int) -> tuple[int, int, int]:
-        if joint_scores is not None and i < len(joint_scores):
+        if (
+            joint_scores is not None
+            and i < len(joint_scores)
+            and not np.isnan(joint_scores[i])
+        ):
             return score_to_color(float(joint_scores[i]))
         return base_color
 
-    # Edges
+    # Edges – màu trung bình 2 đầu, nét dày hơn
     for a, b in SKELETON_EDGES:
         if ok(a) and ok(b):
             pa = _as_int_tuple((kpts_xy[a, 0], kpts_xy[a, 1]))
             pb = _as_int_tuple((kpts_xy[b, 0], kpts_xy[b, 1]))
-            # màu cạnh = trung bình màu 2 đầu (đơn giản dùng đầu a)
-            cv2.line(im, pa, pb, color_for(a), 2, cv2.LINE_AA)
+            ec = _avg_color(color_for(a), color_for(b))
+            cv2.line(im, pa, pb, ec, 3, cv2.LINE_AA)
 
-    # Keypoints
+    # Keypoints – vòng đen ngoài + màu bên trong
     for i in range(kpts_xy.shape[0]):
         if ok(i):
             p = _as_int_tuple((kpts_xy[i, 0], kpts_xy[i, 1]))
-            cv2.circle(im, p, kpt_radius, color_for(i), -1, cv2.LINE_AA)
-            # viền đen để dễ nhìn trên nền sáng
-            cv2.circle(im, p, kpt_radius, (0, 0, 0), 1, cv2.LINE_AA)
+            c = color_for(i)
+            cv2.circle(im, p, kpt_radius + 2, (0, 0, 0), -1, cv2.LINE_AA)
+            cv2.circle(im, p, kpt_radius, c, -1, cv2.LINE_AA)
+
+
+class PoseSmoother:
+    """EMA temporal smoother – giảm jitter keypoints giữa các frame."""
+
+    def __init__(self, alpha: float = 0.35) -> None:
+        self.alpha = alpha
+        self._smooth: Optional[np.ndarray] = None
+
+    def update(
+        self,
+        kpts: np.ndarray,
+        conf: np.ndarray,
+        conf_th: float = CONF_TH,
+    ) -> np.ndarray:
+        if self._smooth is None:
+            self._smooth = kpts.astype(np.float32).copy()
+            return self._smooth.copy()
+        a = self.alpha
+        for i in range(len(kpts)):
+            if float(conf[i]) >= conf_th:
+                self._smooth[i] = a * kpts[i] + (1.0 - a) * self._smooth[i]
+        return self._smooth.copy()
+
+    def reset(self) -> None:
+        self._smooth = None
+
+
+def angle_between(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> float:
+    """Góc tại p2 tạo bởi vector p2→p1 và p2→p3 (độ, 0-180)."""
+    v1 = p1.astype(np.float32) - p2
+    v2 = p3.astype(np.float32) - p2
+    n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+    if n1 < 1e-6 or n2 < 1e-6:
+        return float("nan")
+    cos_a = np.dot(v1, v2) / (n1 * n2)
+    return float(np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0))))
+
+
+# (label, kp_a, kp_center, kp_b) – góc đo tại kp_center
+ANGLE_DEFS: list[tuple[str, int, int, int]] = [
+    ("Khuỷu P", KP_RIGHT_SHOULDER, KP_RIGHT_ELBOW,    KP_RIGHT_WRIST),
+    ("Khuỷu T", KP_LEFT_SHOULDER,  KP_LEFT_ELBOW,     KP_LEFT_WRIST),
+    ("Vai P",   KP_RIGHT_ELBOW,    KP_RIGHT_SHOULDER,  KP_RIGHT_HIP),
+    ("Vai T",   KP_LEFT_ELBOW,     KP_LEFT_SHOULDER,   KP_LEFT_HIP),
+    ("Gối P",   KP_RIGHT_HIP,      KP_RIGHT_KNEE,      KP_RIGHT_ANKLE),
+    ("Gối T",   KP_LEFT_HIP,       KP_LEFT_KNEE,       KP_LEFT_ANKLE),
+]
+
+# kp index của joint trung tâm cho mỗi góc (để vẽ text)
+ANGLE_CENTER_KP: dict[str, int] = {label: c for label, _, c, _ in ANGLE_DEFS}
+
+
+def compute_angles(
+    kpts: np.ndarray, conf: np.ndarray, conf_th: float = CONF_TH
+) -> dict[str, float]:
+    """Tính 6 góc khớp quan trọng từ keypoints pixel. Trả về {label: độ | nan}."""
+    result: dict[str, float] = {}
+    for label, i1, i2, i3 in ANGLE_DEFS:
+        if conf[i1] >= conf_th and conf[i2] >= conf_th and conf[i3] >= conf_th:
+            result[label] = angle_between(kpts[i1], kpts[i2], kpts[i3])
+        else:
+            result[label] = float("nan")
+    return result
+
+
+def draw_angles_overlay(
+    im: np.ndarray,
+    kpts: np.ndarray,
+    conf: np.ndarray,
+    user_angles: dict[str, float],
+    ref_angles: dict[str, float] | None = None,
+    conf_th: float = CONF_TH,
+) -> None:
+    """Vẽ số góc (°) và delta so với ref lên ảnh cạnh joint trung tâm."""
+    for label, angle in user_angles.items():
+        if np.isnan(angle):
+            continue
+        kp_idx = ANGLE_CENTER_KP.get(label)
+        if kp_idx is None or conf[kp_idx] < conf_th:
+            continue
+
+        x, y = _as_int_tuple((kpts[kp_idx, 0], kpts[kp_idx, 1]))
+
+        ref_a = ref_angles.get(label, float("nan")) if ref_angles else float("nan")
+        if not np.isnan(ref_a):
+            delta = angle - ref_a
+            txt = f"{angle:.0f}\xb0 ({delta:+.0f}\xb0)"
+            color = (60, 60, 230) if abs(delta) > 20 else (40, 200, 220) if abs(delta) > 10 else (60, 220, 60)
+        else:
+            txt = f"{angle:.0f}\xb0"
+            color = (200, 200, 60)
+
+        (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        ox, oy = x + 8, y - 4
+        cv2.rectangle(im, (ox - 2, oy - th - 2), (ox + tw + 2, oy + 3), (0, 0, 0), -1)
+        cv2.putText(im, txt, (ox, oy), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
 
 
 def pick_best_person(boxes_xyxy: np.ndarray, kpts_conf: Optional[np.ndarray]) -> int:

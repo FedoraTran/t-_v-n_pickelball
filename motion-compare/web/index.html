@@ -3,128 +3,492 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Motion Compare - Web Client</title>
+  <title>Motion Compare</title>
   <style>
-    body { font-family: Arial, Helvetica, sans-serif; margin: 18px; }
-    #controls { margin-bottom: 12px; }
-    #webcam { border: 1px solid #ccc; }
-    #overlay { position: absolute; left: 0; top: 0; pointer-events: none }
-    .container { position: relative; width: 640px; }
-    .status { margin-left: 8px; color: #555 }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, Helvetica, sans-serif; background: #111; color: #eee; height: 100vh; display: flex; flex-direction: column; }
+
+    #toolbar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px; background: #1c1c1c; border-bottom: 1px solid #333; flex-shrink: 0;
+    }
+    #toolbar label { font-size: 13px; color: #aaa; }
+    #preset { background: #2a2a2a; color: #eee; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; }
+    .btn {
+      padding: 5px 14px; border: none; border-radius: 4px; cursor: pointer;
+      font-size: 13px; font-weight: 600;
+    }
+    #btn-start { background: #2ecc71; color: #111; }
+    #btn-stop  { background: #e74c3c; color: #fff; }
+    #btn-start:disabled, #btn-stop:disabled { opacity: 0.4; cursor: default; }
+    #status { font-size: 12px; color: #888; margin-left: auto; }
+
+    #main { display: flex; flex: 1; overflow: hidden; }
+
+    /* Left – camera view */
+    #cam-panel { position: relative; flex: 1; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    #webcam  { display: block; max-width: 100%; max-height: 100%; }
+    #overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+
+    /* Right – scoreboard */
+    #side {
+      width: 280px; flex-shrink: 0; background: #1a1a1a;
+      border-left: 1px solid #2c2c2c; padding: 14px 12px;
+      display: flex; flex-direction: column; gap: 14px; overflow-y: auto;
+    }
+    .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #666; margin-bottom: 6px; }
+
+    /* Overall */
+    #overall-wrap { text-align: center; }
+    #overall { font-size: 52px; font-weight: 700; line-height: 1; }
+    #overall-label { font-size: 11px; color: #666; margin-top: 2px; }
+
+    /* Reference progress */
+    #ref-progress-wrap { }
+    #ref-bar-bg { height: 6px; background: #2c2c2c; border-radius: 3px; overflow: hidden; }
+    #ref-bar    { height: 6px; background: #3de06a; border-radius: 3px; width: 0%; transition: width .1s; }
+    #ref-label  { font-size: 11px; color: #666; margin-top: 4px; text-align: right; }
+
+    /* Per-joint */
+    .joint-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .joint-name { font-size: 12px; color: #aaa; width: 78px; flex-shrink: 0; }
+    .joint-bar-bg { flex: 1; height: 5px; background: #2c2c2c; border-radius: 3px; overflow: hidden; }
+    .joint-bar    { height: 5px; border-radius: 3px; width: 0%; transition: width .15s; }
+    .joint-val    { font-size: 11px; color: #888; width: 30px; text-align: right; flex-shrink: 0; }
+
+    /* Feedback */
+    #feedback-list { list-style: none; display: flex; flex-direction: column; gap: 5px; }
+    #feedback-list li {
+      font-size: 12px; color: #ccc; padding: 6px 8px;
+      background: #222; border-left: 3px solid #e74c3c; border-radius: 3px;
+    }
+    #feedback-list li.good { border-color: #2ecc71; }
+
+    #fps-info { font-size: 11px; color: #555; margin-top: auto; }
+
+    /* Angles */
+    #angles-section table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    #angles-section td { padding: 3px 4px; }
+    #angles-section .a-label { color: #aaa; width: 64px; }
+    #angles-section .a-user  { color: #eee; text-align: right; width: 42px; }
+    #angles-section .a-ref   { color: #666; text-align: right; width: 42px; }
+    #angles-section .a-delta { text-align: right; width: 48px; font-weight: 600; }
   </style>
 </head>
 <body>
-  <h1>Motion Compare (Web)</h1>
-  <div id="controls">
-    <label for="preset">Preset:</label>
-    <select id="preset"></select>
-    <button id="btn-start">Start</button>
-    <button id="btn-stop" disabled>Stop</button>
-    <span class="status" id="status">(server: unknown)</span>
+
+<div id="toolbar">
+  <label for="preset">Preset:</label>
+  <select id="preset"></select>
+  <button class="btn" id="btn-start">▶ Start</button>
+  <button class="btn" id="btn-stop" disabled>■ Stop</button>
+  <span id="status">đang kết nối server…</span>
+</div>
+
+<div id="main">
+  <!-- Camera panel -->
+  <div id="cam-panel">
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
   </div>
 
-  <div class="container">
-    <video id="webcam" autoplay playsinline width="640" height="480"></video>
-    <canvas id="overlay" width="640" height="480"></canvas>
-  </div>
+  <!-- Scoreboard -->
+  <div id="side">
 
-  <div style="margin-top:10px">
-    <b>Overall:</b> <span id="overall">-</span>
-    <b style="margin-left:12px">Feedback:</b>
-    <ul id="feedback"></ul>
+    <div id="overall-wrap">
+      <div class="section-title">Overall accuracy</div>
+      <div id="overall" style="color:#888">--</div>
+      <div id="overall-label">%</div>
+    </div>
+
+    <div id="ref-progress-wrap">
+      <div class="section-title">Tiến độ reference</div>
+      <div id="ref-bar-bg"><div id="ref-bar"></div></div>
+      <div id="ref-label">0 / 0</div>
+    </div>
+
+    <div id="joints-section">
+      <div class="section-title">Per-joint</div>
+      <div id="joints"></div>
+    </div>
+
+    <div id="angles-section">
+      <div class="section-title">Góc khớp (user → ref)</div>
+      <table id="angles-table">
+        <thead><tr>
+          <th class="a-label" style="text-align:left;color:#555;font-weight:normal">Khớp</th>
+          <th class="a-user" style="color:#555;font-weight:normal">Bạn</th>
+          <th class="a-ref"  style="color:#555;font-weight:normal">Ref</th>
+          <th class="a-delta" style="color:#555;font-weight:normal">Δ</th>
+        </tr></thead>
+        <tbody id="angles-body"></tbody>
+      </table>
+    </div>
+
+    <div id="feedback-section">
+      <div class="section-title">Feedback</div>
+      <ul id="feedback-list"></ul>
+    </div>
+
+    <div id="fps-info">FPS: --</div>
   </div>
+</div>
 
 <script>
 (() => {
-  const API_BASE = '';// same origin (served from this server)
-  const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws/compare';
-  const presetEl = document.getElementById('preset');
-  const statusEl = document.getElementById('status');
-  const btnStart = document.getElementById('btn-start');
-  const btnStop = document.getElementById('btn-stop');
-  const video = document.getElementById('webcam');
-  const overlay = document.getElementById('overlay');
-  const overallEl = document.getElementById('overall');
-  const feedbackEl = document.getElementById('feedback');
+  // ── Constants ──────────────────────────────────────────
+  const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:')
+               + '//' + location.host + '/ws/compare';
 
-  let ws = null; let sending = false; let sendInterval = null;
+  const CONF_TH = 0.25;
+  const EMA_ALPHA = 0.35;   // 0 = frozen, 1 = raw (no smoothing)
 
+  const SKEL_EDGES = [
+    [0,1],[0,2],[1,3],[2,4],
+    [5,6],[5,7],[7,9],[6,8],[8,10],
+    [5,11],[6,12],[11,12],
+    [11,13],[13,15],[12,14],[14,16],
+  ];
+
+  const JOINT_GROUPS = [
+    { label: 'Đầu',       ids: [0,1,2,3,4] },
+    { label: 'Vai',       ids: [5,6] },
+    { label: 'Khuỷu tay', ids: [7,8] },
+    { label: 'Cổ tay',    ids: [9,10] },
+    { label: 'Hông',      ids: [11,12] },
+    { label: 'Đầu gối',   ids: [13,14] },
+    { label: 'Cổ chân',   ids: [15,16] },
+  ];
+
+  // ── DOM refs ───────────────────────────────────────────
+  const presetEl    = document.getElementById('preset');
+  const statusEl    = document.getElementById('status');
+  const btnStart    = document.getElementById('btn-start');
+  const btnStop     = document.getElementById('btn-stop');
+  const video       = document.getElementById('webcam');
+  const overlay     = document.getElementById('overlay');
+  const overallEl   = document.getElementById('overall');
+  const refBar      = document.getElementById('ref-bar');
+  const refLabel    = document.getElementById('ref-label');
+  const jointsEl    = document.getElementById('joints');
+  const feedbackEl  = document.getElementById('feedback-list');
+  const anglesBody  = document.getElementById('angles-body');
+  const fpsEl       = document.getElementById('fps-info');
+
+  // ── State ──────────────────────────────────────────────
+  let ws = null, sending = false, sendInterval = null;
+  let _smoothKpts = null;
+  let _lastFrameTs = 0, _fpsSmooth = 0;
+  let _jointRows = [];  // { bar, val }
+
+  // ── Build joint rows ───────────────────────────────────
+  JOINT_GROUPS.forEach(g => {
+    const row = document.createElement('div');
+    row.className = 'joint-row';
+    row.innerHTML = `
+      <span class="joint-name">${g.label}</span>
+      <div class="joint-bar-bg"><div class="joint-bar" id="jb-${g.label}"></div></div>
+      <span class="joint-val" id="jv-${g.label}">--</span>`;
+    jointsEl.appendChild(row);
+    _jointRows.push({
+      bar: document.getElementById(`jb-${g.label}`),
+      val: document.getElementById(`jv-${g.label}`),
+      ids: g.ids,
+    });
+  });
+
+  // kp index của joint trung tâm cho mỗi angle label (COCO-17)
+  const ANGLE_KP = {
+    "Khuỷu P": 8, "Khuỷu T": 7,
+    "Vai P":   6, "Vai T":   5,
+    "Gối P":  14, "Gối T":  13,
+  };
+
+  // ── Color helpers ──────────────────────────────────────
+  function scoreToColor(s) {
+    if (s === null || s === undefined || isNaN(s)) return '#666';
+    if (s >= 80) return '#3de06a';
+    if (s >= 50) return '#f0c040';
+    return '#e04535';
+  }
+
+  // ── Skeleton drawing ───────────────────────────────────
+  function resizeOverlay() {
+    const rect = overlay.parentElement.getBoundingClientRect();
+    const vw = video.videoWidth  || 640;
+    const vh = video.videoHeight || 480;
+    const scale = Math.min(rect.width / vw, rect.height / vh);
+    overlay.width  = Math.round(vw * scale);
+    overlay.height = Math.round(vh * scale);
+    overlay.style.left = Math.round((rect.width  - overlay.width)  / 2) + 'px';
+    overlay.style.top  = Math.round((rect.height - overlay.height) / 2) + 'px';
+  }
+
+  function drawSkeleton(kpts, perJoint, conf, frameW, frameH) {
+    resizeOverlay();
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    if (!kpts || !kpts.length) return;
+
+    const sx = overlay.width  / (frameW || overlay.width);
+    const sy = overlay.height / (frameH || overlay.height);
+
+    // EMA smooth
+    if (!_smoothKpts) {
+      _smoothKpts = kpts.map(([x, y]) => [x * sx, y * sy]);
+    } else {
+      for (let i = 0; i < kpts.length; i++) {
+        if (conf && conf[i] < CONF_TH) continue;
+        _smoothKpts[i][0] += EMA_ALPHA * (kpts[i][0] * sx - _smoothKpts[i][0]);
+        _smoothKpts[i][1] += EMA_ALPHA * (kpts[i][1] * sy - _smoothKpts[i][1]);
+      }
+    }
+
+    // Edges
+    ctx.lineWidth = 2.5;
+    ctx.lineCap   = 'round';
+    for (const [a, b] of SKEL_EDGES) {
+      if (conf && (conf[a] < CONF_TH || conf[b] < CONF_TH)) continue;
+      const sa = perJoint ? perJoint[a] : null;
+      const sb = perJoint ? perJoint[b] : null;
+      const avg = (sa !== null && sb !== null) ? (sa + sb) / 2 : (sa ?? sb);
+      ctx.strokeStyle = scoreToColor(avg);
+      ctx.globalAlpha = 0.82;
+      ctx.beginPath();
+      ctx.moveTo(_smoothKpts[a][0], _smoothKpts[a][1]);
+      ctx.lineTo(_smoothKpts[b][0], _smoothKpts[b][1]);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Joints
+    for (let i = 0; i < _smoothKpts.length; i++) {
+      if (conf && conf[i] < CONF_TH) continue;
+      const [x, y] = _smoothKpts[i];
+      const color = scoreToColor(perJoint ? perJoint[i] : null);
+      ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = color; ctx.fill();
+    }
+  }
+
+  function drawAnglesOnCanvas(userAngles, refAngles) {
+    if (!_smoothKpts || !userAngles) return;
+    const ctx = overlay.getContext('2d');
+    ctx.font = 'bold 11px Arial';
+    ctx.textBaseline = 'middle';
+
+    for (const [label, ua] of Object.entries(userAngles)) {
+      if (ua === null || ua === undefined) continue;
+      const kpIdx = ANGLE_KP[label];
+      if (kpIdx === undefined || !_smoothKpts[kpIdx]) continue;
+
+      const [x, y] = _smoothKpts[kpIdx];
+      const ra = refAngles?.[label];
+      const delta = (ra !== null && ra !== undefined) ? ua - ra : null;
+
+      let color = '#f0c040';
+      if (delta !== null) {
+        color = Math.abs(delta) > 20 ? '#e04535' : Math.abs(delta) > 10 ? '#f0c040' : '#3de06a';
+      }
+
+      const txt = delta !== null
+        ? `${ua.toFixed(0)}° (${delta > 0 ? '+' : ''}${delta.toFixed(0)}°)`
+        : `${ua.toFixed(0)}°`;
+
+      const tw = ctx.measureText(txt).width;
+      const ox = x + 9, oy = y;
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(ox - 2, oy - 8, tw + 6, 16);
+      ctx.fillStyle = color;
+      ctx.fillText(txt, ox + 1, oy);
+    }
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  function clearOverlay() {
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    _smoothKpts = null;
+  }
+
+  // ── Scoreboard updates ─────────────────────────────────
+  function updateOverall(score, valid) {
+    if (!valid) {
+      overallEl.textContent = '--';
+      overallEl.style.color = '#555';
+      return;
+    }
+    overallEl.textContent = score.toFixed(1);
+    overallEl.style.color = scoreToColor(score);
+  }
+
+  function updateRefProgress(idx, total) {
+    const pct = total > 0 ? (idx / total) * 100 : 0;
+    refBar.style.width = pct + '%';
+    refLabel.textContent = `${idx} / ${total}`;
+  }
+
+  function updateJoints(perJoint) {
+    _jointRows.forEach(({ bar, val, ids }) => {
+      const vals = ids.map(i => perJoint?.[i]).filter(v => v !== null && v !== undefined);
+      if (!vals.length) { bar.style.width = '0%'; val.textContent = '--'; return; }
+      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+      bar.style.width  = avg.toFixed(0) + '%';
+      bar.style.background = scoreToColor(avg);
+      val.textContent  = avg.toFixed(0) + '%';
+      val.style.color  = scoreToColor(avg);
+    });
+  }
+
+  function updateAngles(userAngles, refAngles) {
+    anglesBody.innerHTML = '';
+    if (!userAngles) return;
+    for (const [label, ua] of Object.entries(userAngles)) {
+      const ra = refAngles?.[label] ?? null;
+      const delta = (ua !== null && ra !== null) ? ua - ra : null;
+      const dColor = delta === null ? '#666'
+        : Math.abs(delta) > 20 ? '#e04535'
+        : Math.abs(delta) > 10 ? '#f0c040' : '#3de06a';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="a-label">${label}</td>
+        <td class="a-user">${ua !== null ? ua.toFixed(0) + '°' : '--'}</td>
+        <td class="a-ref">${ra !== null ? ra.toFixed(0) + '°' : '--'}</td>
+        <td class="a-delta" style="color:${dColor}">${delta !== null ? (delta > 0 ? '+' : '') + delta.toFixed(0) + '°' : '--'}</td>`;
+      anglesBody.appendChild(tr);
+    }
+  }
+
+  function updateFeedback(lines) {
+    feedbackEl.innerHTML = '';
+    (lines || []).forEach(f => {
+      const li = document.createElement('li');
+      li.textContent = f;
+      feedbackEl.appendChild(li);
+    });
+  }
+
+  function updateFPS() {
+    const now = performance.now();
+    const dt = now - _lastFrameTs;
+    _lastFrameTs = now;
+    if (dt > 0 && dt < 2000) {
+      _fpsSmooth = 0.15 * (1000 / dt) + 0.85 * _fpsSmooth;
+      fpsEl.textContent = `FPS: ${_fpsSmooth.toFixed(1)}`;
+    }
+  }
+
+  // ── Preset loading ─────────────────────────────────────
   async function loadPresets() {
     try {
       const res = await fetch('/presets');
-      const j = await res.json();
-      const presets = (j.presets || []).map(p => p.name);
+      const j   = await res.json();
+      const names = (j.presets || []).map(p => p.name);
       presetEl.innerHTML = '';
-      if (presets.length === 0) {
-        const opt = document.createElement('option'); opt.text = 'No presets'; opt.disabled = true; presetEl.add(opt);
+      if (!names.length) {
+        presetEl.innerHTML = '<option disabled>No presets</option>';
       } else {
-        presets.forEach(p => { const opt = document.createElement('option'); opt.value = p; opt.text = p; presetEl.add(opt); });
+        names.forEach(n => {
+          const o = document.createElement('option');
+          o.value = o.textContent = n;
+          presetEl.appendChild(o);
+        });
       }
       statusEl.textContent = 'server: ready';
-    } catch (e) {
+    } catch {
       statusEl.textContent = 'server: unreachable';
     }
   }
 
+  // ── Camera ─────────────────────────────────────────────
   async function startCamera() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
-      video.srcObject = stream; await video.play(); return true;
+      const stream = await navigator.mediaDevices.getUserMedia(
+        { video: { width: 640, height: 480 }, audio: false }
+      );
+      video.srcObject = stream;
+      await video.play();
+      return true;
     } catch (e) {
       alert('Không thể truy cập camera: ' + e.message);
       return false;
     }
   }
 
-  function drawKeypoints(kpts) {
-    const ctx = overlay.getContext('2d');
-    ctx.clearRect(0,0,overlay.width,overlay.height);
-    if (!kpts) return;
-    ctx.fillStyle = 'lime'; ctx.strokeStyle = 'lime';
-    kpts.forEach(p => { if (!p) return; ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, Math.PI*2); ctx.fill(); });
-  }
-
+  // ── WebSocket ──────────────────────────────────────────
   function startSending() {
-    if (!video || video.readyState < 2) return;
     ws = new WebSocket(WS_URL);
+
     ws.onopen = () => {
-      const preset = presetEl.value || (presetEl.options[0] && presetEl.options[0].value) || '';
+      const preset = presetEl.value;
       ws.send(JSON.stringify({ type: 'init', preset }));
-      sending = true; btnStart.disabled = true; btnStop.disabled = false;
+      sending = true;
+      btnStart.disabled = true;
+      btnStop.disabled  = false;
+      statusEl.textContent = 'đang kết nối…';
+      _smoothKpts = null;
+
       sendInterval = setInterval(() => {
-        if (!sending) return;
-        const canvas = document.createElement('canvas'); canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d'); ctx.drawImage(video, 0, 0);
-        const data = canvas.toDataURL('image/jpeg', 0.7);
-        const b64 = data.split(',')[1];
-        try { ws.send(JSON.stringify({ type: 'frame', image: b64, client_ts: Date.now() })); } catch (e) {}
-      }, 100);
+        if (!sending || ws.readyState !== WebSocket.OPEN) return;
+        const tmp = document.createElement('canvas');
+        tmp.width  = video.videoWidth;
+        tmp.height = video.videoHeight;
+        tmp.getContext('2d').drawImage(video, 0, 0);
+        const b64 = tmp.toDataURL('image/jpeg', 0.72).split(',')[1];
+        try { ws.send(JSON.stringify({ type: 'frame', image: b64, client_ts: Date.now() })); } catch {}
+      }, 100);  // 10 FPS gửi lên server
     };
-    ws.onmessage = (ev) => {
+
+    ws.onmessage = ev => {
       try {
         const msg = JSON.parse(ev.data);
-        if (msg.type === 'ready') { statusEl.textContent = 'compare ready: ' + (msg.ref_name||''); }
-        else if (msg.type === 'result') {
-          overallEl.textContent = msg.overall;
-          feedbackEl.innerHTML = '';
-          (msg.feedback||[]).forEach(f => { const li = document.createElement('li'); li.textContent = f; feedbackEl.appendChild(li); });
-          if (msg.kpts) drawKeypoints(msg.kpts);
-        } else if (msg.type === 'done') { statusEl.textContent = 'ref done'; }
+        if (msg.type === 'ready') {
+          statusEl.textContent = `▶ ${msg.ref_name} (${msg.num_frames}f @ ${msg.fps}fps)`;
+        } else if (msg.type === 'result') {
+          updateFPS();
+          updateOverall(msg.overall, msg.valid);
+          updateRefProgress(msg.ref_idx, msg.num_ref);
+          updateJoints(msg.per_joint);
+          updateAngles(msg.user_angles, msg.ref_angles);
+          updateFeedback(msg.feedback);
+          drawSkeleton(msg.kpts, msg.per_joint, msg.kpts_conf, msg.frame_w, msg.frame_h);
+          drawAnglesOnCanvas(msg.user_angles, msg.ref_angles);
+        } else if (msg.type === 'done') {
+          statusEl.textContent = 'reference kết thúc';
+        } else if (msg.type === 'error') {
+          statusEl.textContent = '⚠ ' + msg.msg;
+        }
       } catch (e) { console.error(e); }
     };
+
     ws.onclose = () => { stopSending(); statusEl.textContent = 'ws closed'; };
-    ws.onerror = () => { statusEl.textContent = 'ws error'; };
+    ws.onerror = ()  => { statusEl.textContent = 'ws error'; };
   }
 
   function stopSending() {
-    sending = false; btnStart.disabled = false; btnStop.disabled = true;
+    sending = false;
+    btnStart.disabled = false;
+    btnStop.disabled  = true;
     if (sendInterval) { clearInterval(sendInterval); sendInterval = null; }
-    if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ type: 'stop' })); } catch {} ws.close(); }
-    drawKeypoints(null);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ type: 'stop' })); } catch {}
+      ws.close();
+    }
+    clearOverlay();
   }
 
-  btnStart.addEventListener('click', async () => { const ok = await startCamera(); if (!ok) return; startSending(); });
+  // ── Events ─────────────────────────────────────────────
+  btnStart.addEventListener('click', async () => {
+    const ok = await startCamera();
+    if (!ok) return;
+    startSending();
+  });
   btnStop.addEventListener('click', () => stopSending());
+
+  window.addEventListener('resize', resizeOverlay);
+  video.addEventListener('loadedmetadata', resizeOverlay);
 
   loadPresets();
 })();

@@ -144,12 +144,23 @@
                                             </td>
                                             <td class="text-center" style="color:#6c757d;">@s.NumFrames</td>
                                         </tr>
-                                        if (s.Feedback.Count > 0)
+                                        @if (s.Feedback.Count > 0 || !string.IsNullOrEmpty(s.VideoUrl))
                                         {
                                             <tr style="background:#fafafa;">
-                                                <td colspan="5" style="padding:4px 16px 10px;color:#555;font-size:0.82rem;">
-                                                    <i class="fas fa-comment-alt me-1" style="color:#004c6d;opacity:0.5;"></i>
-                                                    @string.Join(" · ", s.Feedback.Take(2))
+                                                <td colspan="5" style="padding:6px 16px 12px;color:#555;font-size:0.82rem;">
+                                                    @if (s.Feedback.Count > 0)
+                                                    {
+                                                        <div style="margin-bottom:@(!string.IsNullOrEmpty(s.VideoUrl) ? "8px" : "0");">
+                                                            <i class="fas fa-comment-alt me-1" style="color:#004c6d;opacity:0.5;"></i>
+                                                            @string.Join(" · ", s.Feedback.Take(2))
+                                                        </div>
+                                                    }
+                                                    @if (!string.IsNullOrEmpty(s.VideoUrl))
+                                                    {
+                                                        <video controls width="100%" style="max-width:640px;border-radius:6px;display:block;" preload="metadata">
+                                                            <source src="@s.VideoUrl" type="video/mp4" />
+                                                        </video>
+                                                    }
                                                 </td>
                                             </tr>
                                         }

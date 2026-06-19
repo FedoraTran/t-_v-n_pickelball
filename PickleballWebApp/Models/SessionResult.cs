@@ -15,5 +15,7 @@ namespace PickleballWebApp.Models
         public double DurationSec { get; set; }
         public List<string> Feedback { get; set; } = new();
         public List<double?> PerJointAccuracy { get; set; } = new();
+        public string? VideoUrl { get; set; }
+        public string? ReportUrl { get; set; }
     }
 }

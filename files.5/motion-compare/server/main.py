@@ -51,7 +51,7 @@ sys.path.insert(0, str(_MC))
 
 from comparator import compare_frame  # noqa: E402
 from feedback import generate_feedback  # noqa: E402
-from pose_utils import CONF_TH, pick_best_person  # noqa: E402
+from pose_utils import CONF_TH, PoseSmoother, pick_best_person, draw_angles_overlay  # noqa: E402
 from recorder import SessionRecorder  # noqa: E402
 from reference import PRESETS_DIR, ReferenceMotion  # noqa: E402
 
@@ -236,7 +236,10 @@ async def compare_video(
                 user_kpts, user_conf, ref_kpts, ref_conf,
                 prev_user_kpts=prev_user, prev_ref_kpts=prev_ref,
             )
-            fb = generate_feedback(cmp.per_joint, cmp.joint_offset)
+            fb = generate_feedback(
+                cmp.per_joint, cmp.joint_offset,
+                user_angles=cmp.user_angles, ref_angles=cmp.ref_angles,
+            )
 
             per_joint_list = [
                 None if np.isnan(v) else round(float(v), 1)
@@ -252,6 +255,8 @@ async def compare_video(
                 "kpts": [[round(float(x), 1), round(float(y), 1)] for x, y in user_kpts.tolist()],
                 "kpts_conf": [round(float(c), 3) for c in user_conf.tolist()],
                 "valid": bool(cmp.valid),
+                "user_angles": {k: None if np.isnan(v) else round(v, 1) for k, v in cmp.user_angles.items()},
+                "ref_angles":  {k: None if np.isnan(v) else round(v, 1) for k, v in cmp.ref_angles.items()},
             }
             results_frames.append(frame_result)
 
@@ -387,6 +392,7 @@ async def ws_compare(ws: WebSocket):
     recorder: SessionRecorder | None = None
     record_enabled = False
 
+    smoother = PoseSmoother(alpha=0.35)
     prev_user: np.ndarray | None = None
     prev_ref: np.ndarray | None = None
     t0: float | None = None
@@ -484,6 +490,8 @@ async def ws_compare(ws: WebSocket):
                     user_kpts = kxy[idx].astype(np.float32)
                     user_conf = kcf[idx].astype(np.float32)
 
+            user_kpts = smoother.update(user_kpts, user_conf)
+
             ref_kpts = ref.kpts[ref_idx]
             ref_conf = ref.conf[ref_idx]
 
@@ -491,9 +499,14 @@ async def ws_compare(ws: WebSocket):
                 user_kpts, user_conf, ref_kpts, ref_conf,
                 prev_user_kpts=prev_user, prev_ref_kpts=prev_ref,
             )
-            fb = generate_feedback(cmp.per_joint, cmp.joint_offset)
+            fb = generate_feedback(
+                cmp.per_joint, cmp.joint_offset,
+                user_angles=cmp.user_angles, ref_angles=cmp.ref_angles,
+            )
 
-            # Build response
+            def _angle_dict(d: dict) -> dict:
+                return {k: None if np.isnan(v) else round(v, 1) for k, v in d.items()}
+
             per_joint_list = [
                 None if np.isnan(v) else round(float(v), 1)
                 for v in cmp.per_joint.tolist()
@@ -511,15 +524,17 @@ async def ws_compare(ws: WebSocket):
                 "frame_h": int(frame.shape[0]),
                 "valid": bool(cmp.valid),
                 "client_ts": client_ts,
+                "user_angles": _angle_dict(cmp.user_angles),
+                "ref_angles":  _angle_dict(cmp.ref_angles),
             }
             await ws.send_json(response)
 
             # Ghi recorder
             if recorder is not None:
-                # render skeleton lên user frame
                 from pose_utils import draw_skeleton
                 user_disp = frame.copy()
                 draw_skeleton(user_disp, user_kpts, user_conf, joint_scores=cmp.per_joint)
+                draw_angles_overlay(user_disp, user_kpts, user_conf, cmp.user_angles, cmp.ref_angles)
                 # ref frame: dùng đen nếu không có video src
                 ref_disp = np.zeros((ref.height or 480, ref.width or 640, 3), dtype=np.uint8)
                 draw_skeleton(ref_disp, ref_kpts, ref_conf, base_color=(220, 220, 220))

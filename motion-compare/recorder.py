@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
+
+from supabase_client import supabase
 
 
 SESSIONS_DIR = Path(__file__).resolve().parent / "sessions"
@@ -106,3 +109,91 @@ class SessionRecorder:
         with open(self.report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
         return self.session_dir
+
+    def save_to_supabase(self, user_id: str, preset_name: str, mode: str = "camera") -> str:
+        """Lưu metadata session lên Supabase, rồi upload video + report.
+
+        Args:
+            user_id: Supabase auth.users.id của người đang tập
+            preset_name: tên preset (ví dụ Forehand-Drive)
+            mode: 'camera' hoặc 'video'
+
+        Returns:
+            UUID của row vừa insert
+        """
+        valid_frames = [f for f in self.entries if f.get("valid")]
+        if not valid_frames:
+            avg_accuracy = 0.0
+        else:
+            avg_accuracy = sum(f["accuracy"] for f in valid_frames) / len(valid_frames)
+
+        # Top 5 feedback xuất hiện nhiều nhất
+        all_feedback: list[str] = []
+        for f in valid_frames:
+            all_feedback.extend(f.get("feedback", []))
+        top_feedback = [fb for fb, _ in Counter(all_feedback).most_common(5)]
+
+        # Trung bình per-joint (17 khớp)
+        per_joint_avg: list[float | None] = [None] * 17
+        for joint_idx in range(17):
+            values = [
+                f["per_joint"][joint_idx]
+                for f in valid_frames
+                if f["per_joint"][joint_idx] is not None
+            ]
+            if values:
+                per_joint_avg[joint_idx] = round(sum(values) / len(values), 1)
+
+        row = {
+            "user_id":          user_id,
+            "preset_name":      preset_name,
+            "mode":             mode,
+            "overall_accuracy": round(avg_accuracy, 2),
+            "num_frames":       len(self.entries),
+            "duration_sec":     round(time.time() - self.started_at, 2),
+            "feedback":         top_feedback,
+            "per_joint":        per_joint_avg,
+        }
+
+        result = supabase.table("sessions").insert(row).execute()
+        session_id = result.data[0]["id"]
+
+        # ━━━ UPLOAD FILES ━━━
+        video_url  = None
+        report_url = None
+
+        # 1. Upload video
+        if self.video_path.exists():
+            storage_path = f"{user_id}/{session_id}.mp4"
+            with open(self.video_path, "rb") as f:
+                supabase.storage.from_("session-videos").upload(
+                    path=storage_path,
+                    file=f,
+                    file_options={"content-type": "video/mp4"},
+                )
+            signed = supabase.storage.from_("session-videos").create_signed_url(
+                storage_path, expires_in=60 * 60 * 24 * 7
+            )
+            video_url = signed["signedURL"]
+
+        # 2. Upload report.json
+        if self.report_path.exists():
+            storage_path = f"{user_id}/{session_id}.json"
+            with open(self.report_path, "rb") as f:
+                supabase.storage.from_("session-reports").upload(
+                    path=storage_path,
+                    file=f,
+                    file_options={"content-type": "application/json"},
+                )
+            signed = supabase.storage.from_("session-reports").create_signed_url(
+                storage_path, expires_in=60 * 60 * 24 * 7
+            )
+            report_url = signed["signedURL"]
+
+        # 3. Update row sessions với 2 URL
+        supabase.table("sessions").update({
+            "video_url":  video_url,
+            "report_url": report_url,
+        }).eq("id", session_id).execute()
+
+        return session_id

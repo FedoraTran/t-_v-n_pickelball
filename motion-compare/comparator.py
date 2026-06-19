@@ -30,6 +30,7 @@ from pose_utils import (
     KP_LEFT_SHOULDER,
     KP_RIGHT_HIP,
     KP_RIGHT_SHOULDER,
+    compute_angles,
 )
 
 
@@ -103,6 +104,8 @@ class FrameComparison:
     per_joint: np.ndarray         # (17,) float, 0-100, NaN nếu n/a
     joint_offset: np.ndarray      # (17, 2) vector user - ref trong toạ độ pixel user
     valid: bool                   # có chuẩn hoá được pose không
+    user_angles: dict             # {label: float°} góc khớp user
+    ref_angles: dict              # {label: float°} góc khớp ref
 
 
 # Map distance d (đã normalize theo torso length) -> điểm 0-100.
@@ -131,12 +134,18 @@ def compare_frame(
     user_norm, _ = normalize_pose(user_kpts, user_conf, conf_th)
     ref_norm, _ = normalize_pose(ref_kpts, ref_conf, conf_th)
 
+    # Tính góc trên raw pixel kpts (trước khi normalize)
+    user_ang = compute_angles(user_kpts, user_conf, conf_th)
+    ref_ang  = compute_angles(ref_kpts,  ref_conf,  conf_th)
+
     if user_norm is None or ref_norm is None:
         return FrameComparison(
             overall=0.0,
             per_joint=np.full((17,), np.nan, dtype=np.float32),
             joint_offset=np.zeros((17, 2), dtype=np.float32),
             valid=False,
+            user_angles=user_ang,
+            ref_angles=ref_ang,
         )
 
     # Position distance per joint (normalized)
@@ -183,4 +192,6 @@ def compare_frame(
         per_joint=per_joint,
         joint_offset=pos_diff.astype(np.float32),
         valid=True,
+        user_angles=user_ang,
+        ref_angles=ref_ang,
     )
